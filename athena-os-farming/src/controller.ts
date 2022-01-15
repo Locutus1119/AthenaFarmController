@@ -1,131 +1,146 @@
 import * as alt from 'alt-server';
-import { OSFarming } from '../index';
+import { playerFuncs } from '../../../server/extensions/extPlayer';
 import { ServerMarkerController } from '../../../server/streamers/marker';
 import { ServerBlipController } from '../../../server/systems/blip';
 import { InteractionController } from '../../../server/systems/interaction';
 import { ItemFactory } from '../../../server/systems/item';
-import { ANIMATION_FLAGS } from '../../../shared/flags/animationFlags';
-import { Animation } from '../../../shared/interfaces/animation';
-import { farmingTools, itemLists } from '../data/farmableItems';
-import { animationLists } from '../data/farmAnimations';
-import { allRoutes, farmingBlips } from '../data/farmPositions';
-import { playerFuncs } from '../../../server/extensions/extPlayer';
+import { farmRegistry } from '../farmingLists/farmRegistry';
+import { IFarming } from '../interfaces/iFarming';
+import { OSFARMING_TRANSLATIONS } from './translations';
 
 export class FarmingController {
     /**
-     * Create all the blips and markers for the farming spots.
-     * @returns nothing
+     * Create all the spots and blips for the farms.
+     * @returns None
      */
-    static buildSpots() {
-        for (let i = 0; i < farmingBlips.length; i++) {
-            ServerBlipController.append({
-                pos: farmingBlips[i].pos,
-                shortRange: true,
-                sprite: farmingBlips[i].sprite,
-                color: farmingBlips[i].color,
-                text: farmingBlips[i].text,
-                scale: farmingBlips[i].scale,
-            });
-        }
-        for (let i = 0; i < allRoutes.length; i++) {
-            allRoutes[i].forEach((route, x) => {
+    static createSpots() {
+        for (let x = 0; x < farmRegistry.length; x++) {
+            if (farmRegistry[x].blip.isBlip) {
+                ServerBlipController.append({
+                    pos: farmRegistry[x].blip.position,
+                    shortRange: true,
+                    sprite: farmRegistry[x].blip.sprite,
+                    color: farmRegistry[x].blip.color,
+                    text: farmRegistry[x].blip.text,
+                    scale: farmRegistry[x].blip.scale,
+                    identifier: `${farmRegistry[x].routeName}-${x}`,
+                });
+            }
+
+            for (let spot = 0; spot < farmRegistry[x].spots.positions.length; spot++) {
+                if (farmRegistry[x].marker.isMarker) {
+                    ServerMarkerController.append({
+                        pos: {
+                            x: farmRegistry[x].spots.positions[spot].x,
+                            y: farmRegistry[x].spots.positions[spot].y,
+                            z: farmRegistry[x].spots.positions[spot].z + 1,
+                        },
+                        type: farmRegistry[x].marker.type,
+                        bobUpAndDown: farmRegistry[x].marker.bobUpAndDown,
+                        rotate: farmRegistry[x].marker.rotate,
+                        color: {
+                            r: farmRegistry[x].marker.color.r,
+                            g: farmRegistry[x].marker.color.g,
+                            b: farmRegistry[x].marker.color.b,
+                            a: farmRegistry[x].marker.color.a,
+                        },
+                        uid: `${farmRegistry[x].routeName}-${x}`,
+                    });
+                }
+
                 InteractionController.add({
-                    position: { x: route.x, y: route.y, z: route.z },
-                    description: 'Start Farming...',
-                    range: OSFarming.interactionRange,
-                    uid: `IC-${x}`, 
-                    debug: false,
+                    description: farmRegistry[x].spots.interactionText,
+                    position: farmRegistry[x].spots.positions[spot],
                     callback: (player: alt.Player) => {
-                        const toolInInventory = playerFuncs.inventory.isInInventory(player, { name: farmingTools[i][0].name});
-                        if(!toolInInventory) {
-                            playerFuncs.emit.notification(player, `Not the right tools in Inventory!`);
-                            return;
-                        }
-                        player.data.inventory[toolInInventory.index].data.durability -= 1;
-                        if(player.data.inventory[toolInInventory.index].data.durability <= 1) {
-                            playerFuncs.inventory.findAndRemove(player, player.data.inventory[toolInInventory.index].name)
-                        }
-                        playerFuncs.save.field(player, 'inventory', player.data.inventory);
-                        playerFuncs.sync.inventory(player);
-
-                        if (player.getMeta(`SpotUsed-${x}`) != null) {
-                            playerFuncs.emit.notification(player, `You've used the Spot before already, wait a bit.`);
-                            return;
-                        }
-
-                        const newAnimation: Animation = {
-                            dict: animationLists[i][0].dict,
-                            name: animationLists[i][0].name,
-                            flags: ANIMATION_FLAGS.REPEAT,
-                            duration: null,
-                        };
-
-                        this.startFarming(player, newAnimation, itemLists[i]);
-                        player.setMeta(`SpotUsed-${x}`, x);
-                        const farmRespawn = getRandomInt(OSFarming.minspotRespawnTime, OSFarming.maxspotRespawnTime);
-                        alt.setTimeout(() => {
-                            player.deleteMeta(`SpotUsed-${x}`);
-                        }, farmRespawn);
-                        return;
+                        this.handleFarming(player, farmRegistry[x], farmRegistry[x].spots.positions[spot]);
                     },
                 });
-
-                ServerMarkerController.append({
-                    uid: `route-${x}`,
-                    pos: { x: route.x, y: route.y, z: route.z + 1 },
-                    type: 2,
-                    color: {
-                        r: 50,
-                        g: 205,
-                        b: 50,
-                        a: 255,
-                    },
-                    bobUpAndDown: true,
-                    rotate: true,
-                });
-            });
+            }
         }
     }
 
-    /**
-     * The player will play an animation for a random amount of time, and then add a random item to
-    their inventory.
-    * @param {alt.Player} player - The player who is farming
-    * @param {Animation} animation - Animation
-    * @param {Array} itemList - An array of objects, each containing the name of the item to be added
-    to the player's inventory.
-    * @returns The item that was added to the player's inventory.
-    */
-    private static async startFarming(player: alt.Player, animation: Animation, itemList?: Array<any>) {
-        const freeInvSlot = playerFuncs.inventory.getFreeInventorySlot(player);
-        const itemToAdd = await ItemFactory.get(itemList[getRandomInt(0, itemList.length)]['name']);
-        const isInInv = playerFuncs.inventory.isInInventory(player, { name: itemToAdd.name });
-        if (!freeInvSlot) {
-            playerFuncs.emit.notification(player, 'No Space in Inventory!');
-            return;
-        }
-        if (player.hasMeta('IsFarming') && player.getMeta('IsFarming') === true) return;
-        if(!player.hasMeta('IsFarming'))  {
-            player.setMeta('IsFarming', true);
-            const farmDuration = getRandomInt(OSFarming.minFarmDuration, OSFarming.maxFarmDuration);
-            playerFuncs.emit.animation(player, animation.dict, animation.name, animation.flags, farmDuration);
+    static async handleFarming(player: alt.Player, farmingData: IFarming, antiMacro: alt.Vector3) {
+        if (farmingData.requiredTool != null) {
+            const hasTool = playerFuncs.inventory.isInInventory(player, { name: farmingData.requiredTool });
+            const toolItem = player.data.inventory[hasTool.index];
+            if (!hasTool) {
+                playerFuncs.emit.notification(player, OSFARMING_TRANSLATIONS.NO_TOOL);
+                return;
+            }
+
+            if (player.getMeta(`IsFarming`) === true) {
+                return;
+            }
+            if (player.getMeta(`Spotused-${antiMacro.x}`) === antiMacro.x) {
+                playerFuncs.emit.notification(player, `[ANTIMACRO] - Already used this spot before.`);
+                return;
+            }
+            player.setMeta(`Spotused-${antiMacro.x}`, antiMacro.x);
+            player.setMeta(`IsFarming`, true);
+
             alt.setTimeout(() => {
-                if (!isInInv) {
-                    playerFuncs.inventory.inventoryAdd(player, itemToAdd, freeInvSlot.slot);
-                    playerFuncs.save.field(player, 'inventory', player.data.inventory);
-                    playerFuncs.sync.inventory(player);
-                    playerFuncs.emit.notification(player, `You get x1 ${itemToAdd.name}!`);
-                    player.deleteMeta('IsFarming');
-                    return;
-                } else {
-                    player.data.inventory[isInInv.index].quantity += 1;
-                    playerFuncs.save.field(player, 'inventory', player.data.inventory);
-                    playerFuncs.sync.inventory(player);
-                    playerFuncs.emit.notification(player, `You get x1 ${itemToAdd.name}!`);
-                    player.deleteMeta('IsFarming');
-                    return;
+                player.deleteMeta(`Spotused-${antiMacro.x}`);
+            }, getRandomInt(60000, 180000));
+
+            playerFuncs.emit.animation(
+                player,
+                farmingData.animation.dict,
+                farmingData.animation.name,
+                farmingData.animation.flags,
+                farmingData.farmDuration,
+            );
+
+            alt.setTimeout(async () => {
+                // Common Items
+                const commonItemToAdd = await ItemFactory.getByName(
+                    farmingData.outcome.common[getRandomInt(0, farmingData.outcome.common.length)],
+                );
+                const hasCommonItem = playerFuncs.inventory.isInInventory(player, { name: commonItemToAdd.name });
+
+                // Rare Items
+                const rareItemToAdd = await ItemFactory.getByName(
+                    farmingData.outcome.rare[getRandomInt(0, farmingData.outcome.rare.length)],
+                );
+                const hasRareItem = playerFuncs.inventory.isInInventory(player, { name: rareItemToAdd.name });
+
+                // Epic Items
+                const epicItemToAdd = await ItemFactory.getByName(
+                    farmingData.outcome.epic[getRandomInt(0, farmingData.outcome.epic.length)],
+                );
+                const hasEpicItem = playerFuncs.inventory.isInInventory(player, { name: epicItemToAdd.name });
+
+                const emptySlot = playerFuncs.inventory.getFreeInventorySlot(player);
+                switch (toolItem.data.rarity) {
+                    case 'common': {
+                        if (!hasCommonItem) {
+                            playerFuncs.inventory.inventoryAdd(player, commonItemToAdd, emptySlot.slot);
+                            playerFuncs.emit.notification(player, `You've found ${commonItemToAdd.name}!`);
+                        } else {
+                            player.data.inventory[hasCommonItem.index].quantity += 1;
+                            playerFuncs.emit.notification(player, `You've found ${commonItemToAdd.name}!`);
+                        }
+
+                        player.data.inventory[hasTool.index].data.durability -= 1;
+                        if (player.data.inventory[hasTool.index].data.durability <= 1) {
+                            playerFuncs.inventory.findAndRemove(player, farmingData.requiredTool);
+                        }
+
+                        playerFuncs.save.field(player, 'inventory', player.data.inventory);
+                        playerFuncs.sync.inventory(player);
+                        break;
+                    }
+                    case 'rare': {
+                        break;
+                    }
+                    case 'epic': {
+                        break;
+                    }
+                    default: {
+                        break;
+                    }
                 }
-            }, farmDuration);
+                player.deleteMeta(`IsFarming`);
+            }, farmingData.farmDuration);
         }
     }
 }
